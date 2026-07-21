@@ -1,0 +1,7 @@
+{
+    "nim.buildCommand": "c",
+    "nim.buildOnSave": true,
+    "nim.project": [
+        "nest.nim"
+    ],
+}
