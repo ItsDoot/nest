@@ -25,18 +25,6 @@ proc newTypeInfo*[T](): TypeInfo =
   result.destroy = proc (data: pointer) =
     `=destroy`(cast[ptr T](data)[])
 
-proc `=destroy`(bs: var BlobSeq) =
-  if bs.data != nil:
-    for i in 0 ..< bs.len:
-      let item = cast[pointer](cast[int](bs.data) + i * bs.info.size)
-      bs.info.destroy(item)
-    deallocShared(bs.data)
-    bs.data = nil
-
-proc `=copy`(dest: var BlobSeq, src: BlobSeq) {.error.} =
-  ## Copying is disabled.
-  discard
-
 proc initBlobSeq*(info: TypeInfo, capacity: int = 0): BlobSeq =
   ## Creates a new BlobSeq object with the specified TypeInfo and capacity.
   assert capacity >= 0, "Capacity must be non-negative"
@@ -62,10 +50,21 @@ proc grow*(bs: var BlobSeq, newCap: int = max(1, bs.cap * 2)) =
   bs.data = reallocShared0(bs.data, bs.info.size * bs.cap, bs.info.size * newCap)
   bs.cap = newCap
 
+iterator items*(bs: var BlobSeq): pointer =
+  ## Iterates over the items in the BlobSeq, yielding pointers to each item.
+  for i in 0 ..< bs.len:
+    yield cast[pointer](cast[int](bs.data) + i * bs.info.size)
+
 template itemPtr(bs: BlobSeq, index: int): pointer =
   ## Computes the address of the item at `index` within the BlobSeq's buffer.
   assert index >= 0 and index < bs.len, "Index out of bounds"
   cast[pointer](cast[int](bs.data) + index * bs.info.size)
+
+template appendItemPtr(bs: var BlobSeq): pointer =
+  ## Computes the address of the next available slot for appending a new item.
+  if bs.len == bs.cap:
+    bs.grow()
+  cast[pointer](cast[int](bs.data) + bs.len * bs.info.size)
 
 proc swapRemove*(bs: var BlobSeq, index: int) =
   ## Destroys item at index and swap-removes it from the BlobSeq.
@@ -82,10 +81,8 @@ proc transferItem*(dest: var BlobSeq, src: var BlobSeq, srcIndex: int) =
   ## the (now empty) slot in src.
   assert dest.info.size == src.info.size, "Type size mismatch"
   assert dest.info.align == src.info.align, "Type alignment mismatch"
-  if dest.len == dest.cap:
-    dest.grow()
   let srcPtr = itemPtr(src, srcIndex)
-  let destPtr = itemPtr(dest, dest.len)
+  let destPtr = appendItemPtr(dest)
   dest.info.move(destPtr, srcPtr)
   inc(dest.len)
   let lastIndex = src.len - 1
@@ -116,8 +113,17 @@ proc `[]=`*[T](bs: BlobSeq, index: int, itemType: typedesc[T], value: sink T) =
 
 proc add*[T](bs: var BlobSeq, value: sink T) =
   ## Adds a new item of type T to the end of the BlobSeq.
-  if bs.len == bs.cap:
-    bs.grow()
-  let p = cast[pointer](cast[int](bs.data) + bs.len * bs.info.size)
+  let p = appendItemPtr(bs)
   bs.info.move(p, unsafeAddr value)
   inc(bs.len)
+
+proc `=destroy`(bs: var BlobSeq) =
+  if bs.data != nil:
+    for p in bs:
+      bs.info.destroy(p)
+    deallocShared(bs.data)
+    bs.data = nil
+
+proc `=copy`(dest: var BlobSeq, src: BlobSeq) {.error.} =
+  ## Copying is disabled.
+  discard

@@ -101,6 +101,7 @@ proc `<`*(a, b: TypeId): bool {.borrow.}
 
 proc `==`*(a, b: EntityId): bool {.borrow.}
 proc `<`*(a, b: EntityId): bool {.borrow.}
+proc `$`*(a: EntityId): string {.borrow.}
 
 proc `==`*(a, b: ArchetypeId): bool {.borrow.}
 
@@ -182,6 +183,26 @@ proc moveEntity(world: var World, id: EntityId, dst: Archetype) =
 ##################################################
 # ENTITY MANAGEMENT
 ##################################################
+
+proc `[]`*(world: World, id: EntityId): Entity =
+  ## Retrieves an entity handle from the ECS world given its unique identifier.
+  if id notin world.entities.records:
+    raise newException(ValueError, "Entity with ID " & $id & " does not exist in the world")
+  result = Entity(world: world, id: id)
+
+proc `[]`*[T](world: World, cType: typedesc[T]): Entity =
+  ## Retrieves an entity handle for the component type T from the ECS world.
+  let tid = typeId[T]()
+  if tid notin world.components.types:
+    raise newException(ValueError, "Component type " & $T & " is not registered")
+  let cid = world.components.types[tid]
+  result = world[cid]
+
+proc `[]=`*[T](world: var World, cType: typedesc[T], value: sink T) =
+  ## Inserts a resource of type T into the ECS world, placing it on its own entity.
+  let eid = world.component(T)
+  var entity = world[eid]
+  entity[T] = value
 
 proc spawn*(world: var World): Entity =
   ## Creates a new entity in the ECS world and returns its handle.

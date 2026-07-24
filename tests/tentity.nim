@@ -32,3 +32,11 @@ test "Entity component lifecycle":
   check not entity.has(myComponentId)
   entity.destroy()
   check not entity.isAlive()
+
+test "Resource component lifecycle":
+  type MyResource = object
+    value: int
+
+  var world = newWorld()
+  world[MyResource] = MyResource(value: 42)
+  check world[MyResource][MyResource].value == 42
