@@ -12,9 +12,9 @@ import nest
 test "Entity creation":
   var world = newWorld()
   let entity = world.spawn()
-  check entity.id() == EntityId(0)
+  check entity.id() == EntityId(1)
   let entity2 = world.spawn()
-  check entity2.id() == EntityId(1)
+  check entity2.id() == EntityId(2)
 
 test "Entity component lifecycle":
   type MyComponent = object
@@ -23,9 +23,12 @@ test "Entity component lifecycle":
   var world = newWorld()
   var entity = world.spawn()
   entity[MyComponent] = MyComponent(value: 42)
+  let myComponentId = world.component(MyComponent)
+  check entity.has(MyComponent)
+  check entity.has(myComponentId)
   check entity[MyComponent] == MyComponent(value: 42)
   entity.remove(MyComponent)
   check not entity.has(MyComponent)
-
+  check not entity.has(myComponentId)
   entity.destroy()
   check not entity.isAlive()
