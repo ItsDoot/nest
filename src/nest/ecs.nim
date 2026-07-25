@@ -31,7 +31,7 @@ type
       ## A collection of columns, each representing a specific component type in the archetype.
     entities: seq[EntityId]
       ## A collection of entity IDs that belong to the archetype.
-    edges: TableRef[EntityId, ArchetypeEdge]
+    edges: Table[EntityId, ArchetypeEdge]
       ## A mapping of component IDs to their corresponding archetype edges.
   
   ArchetypeEdge* = object
@@ -42,7 +42,7 @@ type
   Archetypes* = object
     nextId: ArchetypeId
       ## The next available archetype ID.
-    table: TableRef[Signature, Archetype]
+    table: Table[Signature, Archetype]
       ## A mapping of signatures to their corresponding archetypes.
 
   ArchetypeRecord* = object
@@ -56,14 +56,14 @@ type
       ## The archetype to which the entity belongs.
     row: int
       ## The row index of the entity in the archetype's columns.
-    archetypes: TableRef[ArchetypeId, ArchetypeRecord]
+    archetypes: Table[ArchetypeId, ArchetypeRecord]
       ## A mapping of archetype IDs to their corresponding archetype records.
       ## Nil if the entity is not a component entity.
 
   Entities* = object
     nextId: EntityId
       ## The next available entity ID.
-    records: TableRef[EntityId, EntityRecord]
+    records: Table[EntityId, EntityRecord]
       ## A mapping of entity IDs to their corresponding entity records.
 
   Components* = object
@@ -125,60 +125,110 @@ proc nextArchetypeId(archetypes: var Archetypes): ArchetypeId =
   archetypes.nextId.inc()
   result = id
 
-proc getTypeInfo(world: World, cid: EntityId): TypeInfo =
-  ## Retrieves the TypeInfo of a component given its entity ID.
-  let entityRecord = world.entities.records[cid]
-  let componentCId = world.components.types[typeId[Component]()]
-  let componentRecord = world.entities.records[componentCId]
-  let column = componentRecord.archetypes[entityRecord.archetype.id].column
-  result = entityRecord.archetype.columns[column][entityRecord.row, Component].info
+proc getComponentId[T](world: World, cType: typedesc[T]): EntityId =
+  ## Retrieves the component ID associated with the given type ID.
+  let id = typeId[T]()
+  world.components.types.withValue(id, val):
+    return val[]
+  do:
+    raise newException(ValueError, "Component type ID " & $T & " is not registered")
+
+proc tryGetColumn(world: World, record: EntityRecord, cid: EntityId): int =
+  ## Returns the column index of a component in the given entity's archetype,
+  ## or -1 if the component is not present.
+  let componentRecord = world.entities.records.getOrDefault(cid)
+  componentRecord.archetypes.withValue(record.archetype.id, val):
+    return val.column
+  do:
+    return -1
+
+proc getTypeInfo(world: World, record: EntityRecord): TypeInfo =
+  ## Retrieves the TypeInfo of a component from the given component entity's record.
+  let componentCId = world.getComponentId(Component)
+  let column = world.tryGetColumn(record, componentCId)
+  if column == -1:
+    raise newException(ValueError, "Entity is not a component entity")
+  result = record.archetype.columns[column][record.row, Component].info
 
 proc getOrCreateArchetype(world: var World, sig: sink Signature): Archetype =
-  ## Retrieves an existing archetype with the specified signature or creates a new one if it doesn't exist.
+  ## Retrieves an existing archetype with the specified signature or creates a
+  ## new one if it doesn't exist.
   sig.sort()
 
-  if sig in world.archetypes.table:
-    return world.archetypes.table[sig]
+  result = world.archetypes.table.getOrDefault(sig)
+  if result != nil:
+    return result
 
   let newId = world.archetypes.nextArchetypeId()
 
   var columns = newSeq[Column](sig.len)
   for i, cid in sig:
-    var record = world.entities.records[cid]
-    columns[i] = initBlobSeq(world.getTypeInfo(cid))
-    record.archetypes[newId] = ArchetypeRecord(column: i)
+    columns[i] = initBlobSeq(world.getTypeInfo(world.entities.records[cid]))
+    world.entities.records[cid].archetypes[newId] = ArchetypeRecord(column: i)
 
   result = Archetype(
     id: newId,
     signature: sig,
     columns: columns,
-    edges: newTable[EntityId, ArchetypeEdge]()
+    edges: initTable[EntityId, ArchetypeEdge]()
   )
   world.archetypes.table[sig] = result
 
+proc swapRemoveEntity(world: var World, archetype: Archetype, row: int) =
+  ## Removes the entity at the specified row from the archetype, swapping it
+  ## with the last entity in the archetype.
+  let lastRow = archetype.entities.len - 1
+  if row != lastRow:
+    let lastEntityId = archetype.entities[lastRow]
+    world.entities.records[lastEntityId].row = row
+    archetype.entities[row] = lastEntityId
+  archetype.entities.setLen(lastRow)
+
 proc moveEntity(world: var World, id: EntityId, dst: Archetype) =
   ## Moves an entity to a new archetype, updating its record and transferring its components.
-  let record = world.entities.records[id]
-  let src = record.archetype
-  let newRow = dst.entities.len
-  dst.entities.add(id)
+  world.entities.records.withValue(id, record):
+    let src = record.archetype
+    let oldRow = record.row
+    let newRow = dst.entities.len
+    dst.entities.add(id)
 
-  for i, cid in src.signature:
-    let dstCol = dst.signature.find(cid)
-    if dstCol >= 0:
-      dst.columns[dstCol].transferItem(src.columns[i], record.row)
-    else:
-      src.columns[i].swapRemove(record.row)
-  
-  let lastRow = src.entities.len - 1
-  if record.row != lastRow:
-    let lastEntityId = src.entities[lastRow]
-    world.entities.records[lastEntityId].row = record.row
-    src.entities[record.row] = lastEntityId
-  src.entities.setLen(lastRow)
+    for i, cid in src.signature:
+      let dstCol = dst.signature.binarySearch(cid)
+      if dstCol >= 0:
+        dst.columns[dstCol].transferItem(src.columns[i], oldRow)
+      else:
+        src.columns[i].swapRemove(oldRow)
 
-  world.entities.records[id] = EntityRecord(archetype: dst, row: newRow, archetypes: record.archetypes)
+    world.swapRemoveEntity(src, oldRow)
+    record.archetype = dst
+    record.row = newRow
+
+type Operation = enum
+  opAdd, opRemove
+
+proc getOrCreateEdge(world: var World, src: Archetype, cid: EntityId, op: static[Operation]): Archetype =
+  ## Retrieves an existing archetype edge for the specified component ID and operation
+  ## or creates a new one if it doesn't exist.
+  let edge = src.edges.getOrDefault(cid)
+  result = case op
+    of opAdd: edge.add
+    of opRemove: edge.remove
+  if result != nil:
+    return result
   
+  var newSig = src.signature
+  case op
+    of opAdd: newSig.add(cid)
+    of opRemove: newSig.delete(newSig.binarySearch(cid))
+  result = world.getOrCreateArchetype(newSig)
+
+  case op
+    of opAdd:
+      src.edges[cid] = ArchetypeEdge(add: result, remove: edge.remove)
+      result.edges.mgetOrPut(cid, ArchetypeEdge()).remove = src
+    of opRemove:
+      src.edges[cid] = ArchetypeEdge(add: edge.add, remove: result)
+      result.edges.mgetOrPut(cid, ArchetypeEdge()).add = src
 
 ##################################################
 # ENTITY MANAGEMENT
@@ -192,10 +242,7 @@ proc `[]`*(world: World, id: EntityId): Entity =
 
 proc `[]`*[T](world: World, cType: typedesc[T]): Entity =
   ## Retrieves an entity handle for the component type T from the ECS world.
-  let tid = typeId[T]()
-  if tid notin world.components.types:
-    raise newException(ValueError, "Component type " & $T & " is not registered")
-  let cid = world.components.types[tid]
+  let cid = world.getComponentId(T)
   result = world[cid]
 
 proc `[]=`*[T](world: var World, cType: typedesc[T], value: sink T) =
@@ -219,11 +266,10 @@ proc spawn*(world: var World): Entity =
 proc component*[T](world: var World, cType: typedesc[T]): EntityId =
   ## Registers a new component type T in the ECS world and returns its unique entity ID.
   let tid = typeId[T]()
-  if tid in world.components.types:
-    return world.components.types[tid] # component type already registered, return existing ID
+  world.components.types.withValue(tid, val):
+    return val[] # component type already registered, return existing ID
   var entity = world.spawn()
   world.components.types[tid] = entity.id
-  world.entities.records[entity.id].archetypes = newTable[ArchetypeId, ArchetypeRecord]()
   entity[Component] = Component(info: newTypeInfo[T]())
   result = entity.id
 
@@ -239,101 +285,69 @@ proc isAlive*(entity: Entity): bool =
 proc has*(entity: Entity, id: EntityId): bool =
   ## Checks if this entity is associated with the entity of the given ID.
   let world = entity.world
-  if entity.id notin world.entities.records:
+  world.entities.records.withValue(entity.id, record):
+    return world.tryGetColumn(record[], id) != -1
+  do:
     return false # This entity does not exist in the world
-  if id notin world.entities.records:
-    return false # The component entity does not exist in the world
-  let entityRecord = world.entities.records[entity.id]
-  let componentRecord = world.entities.records[id]
-  if componentRecord.archetypes == nil:
-    return false
-  result = componentRecord.archetypes.hasKey(entityRecord.archetype.id)
 
 proc has*[T](entity: Entity, cType: typedesc[T]): bool =
   ## Checks if the entity has a component of type T.
   let world = entity.world
-  let tid = typeId[T]()
-  if tid notin world.components.types:
+  world.components.types.withValue(typeId[T](), val):
+    let cid = val[]
+    return entity.has(cid)
+  do:
     return false # Component type T is not registered
-  let cid = world.components.types[tid]
-  result = entity.has(cid)
+
+template get0[T](entity: typed, cType: typedesc[T]) =
+  var world = entity.world
+  let entityRecord = world.entities.records[entity.id]
+  let cid = world.getComponentId(T)
+  let column = world.tryGetColumn(entityRecord, cid)
+  if column == -1:
+    raise newException(ValueError, "Entity does not have component of type " & $T)
+  result = entityRecord.archetype.columns[column][entityRecord.row, T]
 
 proc `[]`*[T](entity: Entity, cType: typedesc[T]): lent T =
   ## Retrieves the component of type T associated with the entity, if it exists.
-  let world = entity.world
-  let entityRecord = world.entities.records[entity.id]
-  let tid = typeId[T]()
-  if tid notin world.components.types:
-    raise newException(ValueError, "Component type " & $T & " is not registered")
-  let cid = world.components.types[tid]
-  let componentRecord = world.entities.records[cid]
-  if not componentRecord.archetypes.hasKey(entityRecord.archetype.id):
-    raise newException(ValueError, "Entity does not have component of type " & $T)
-  let column = componentRecord.archetypes[entityRecord.archetype.id].column
-  result = entityRecord.archetype.columns[column][entityRecord.row, T]
+  get0(entity, cType)
 
 proc `[]`*[T](entity: var Entity, cType: typedesc[T]): var T =
   ## Retrieves the component of type T associated with the entity, if it exists.
-  var world = entity.world
-  let entityRecord = world.entities.records[entity.id]
-  let tid = typeId[T]()
-  if tid notin world.components.types:
-    raise newException(ValueError, "Component type " & $T & " is not registered")
-  let cid = world.components.types[tid]
-  let componentRecord = world.entities.records[cid]
-  if not componentRecord.archetypes.hasKey(entityRecord.archetype.id):
-    raise newException(ValueError, "Entity does not have component of type " & $T)
-  let column = componentRecord.archetypes[entityRecord.archetype.id].column
-  result = entityRecord.archetype.columns[column][entityRecord.row, T]
+  get0(entity, cType)
 
 proc `[]=`*[T](entity: var Entity, cType: typedesc[T], value: sink T) =
   ## Associates a component of type T with the entity.
   var world = entity.world
   var entityRecord = world.entities.records[entity.id]
   let cid = world.component(T)
-  let componentRecord = world.entities.records[cid]
 
-  if componentRecord.archetypes.hasKey(entityRecord.archetype.id):
-    # component already present, overwrite it
-    let column = componentRecord.archetypes[entityRecord.archetype.id].column
-    entityRecord.archetype.columns[column][entityRecord.row, T] = value
-    return
+  world.entities.records.withValue(cid, componentRecord):
+    componentRecord.archetypes.withValue(entityRecord.archetype.id, val):
+      # component already present, overwrite it
+      entityRecord.archetype.columns[val.column][entityRecord.row, T] = value
+      return
 
-  # need to move entity to a new archetype
-  var dest = entityRecord.archetype.edges.getOrDefault(cid).add
-  if dest == nil:
-    # create new archetype with the added component
-    var newSig = entityRecord.archetype.signature
-    newSig.add(cid)
-    dest = world.getOrCreateArchetype(newSig)
-    entityRecord.archetype.edges[cid] = ArchetypeEdge(add: dest, remove: entityRecord.archetype.edges.getOrDefault(cid).remove)
-    dest.edges[cid] = ArchetypeEdge(add: dest.edges.getOrDefault(cid).add, remove: entityRecord.archetype)
-
-  world.moveEntity(entity.id, dest)
-  let newColumn = componentRecord.archetypes[dest.id].column
-  dest.columns[newColumn].add(value)
+    # need to move entity to a new archetype
+    let dest = world.getOrCreateEdge(entityRecord.archetype, cid, opAdd)
+    world.moveEntity(entity.id, dest)
+    let newColumn = componentRecord.archetypes[dest.id].column
+    dest.columns[newColumn].add(value)
 
 proc remove*[T](entity: var Entity, cType: typedesc[T]) =
   ## Removes the component of type T from the entity, if it exists.
   var world = entity.world
   let entityRecord = world.entities.records[entity.id]
   let tid = typeId[T]()
-  if tid notin world.components.types:
-    return # component isn't registered
-  let cid = world.components.types[tid]
-  let componentRecord = world.entities.records[cid]
-  if not componentRecord.archetypes.hasKey(entityRecord.archetype.id):
-    return # entity doesn't have the component
-
-  var dest = entityRecord.archetype.edges[cid].remove
-  if dest == nil:
-    # create/find new archetype without the removed component
-    var newSig = entityRecord.archetype.signature
-    newSig.delete(newSig.find(cid))
-    dest = world.getOrCreateArchetype(newSig)
-    entityRecord.archetype.edges[cid] = ArchetypeEdge(add: entityRecord.archetype.edges[cid].add, remove: dest)
-    dest.edges[cid] = ArchetypeEdge(add: entityRecord.archetype, remove: dest.edges[cid].remove)
-  world.moveEntity(entity.id, dest)
+  world.components.types.withValue(tid, val):
+    let cid = val[]
+    let componentRecord = world.entities.records[cid]
+    if not componentRecord.archetypes.hasKey(entityRecord.archetype.id):
+      return # entity doesn't have the component
+    let dest = world.getOrCreateEdge(entityRecord.archetype, cid, opRemove)
+    world.moveEntity(entity.id, dest)
+  do:
+    return # component type T is not registered, nothing to remove
 
 proc destroy*(entity: sink Entity) =
   ## Destroys the entity and removes it from the ECS world.
@@ -348,13 +362,7 @@ proc destroy*(entity: sink Entity) =
   for col in record.archetype.columns.mitems:
     col.swapRemove(record.row)
   
-  let lastRow = record.archetype.entities.len - 1
-  if record.row != lastRow:
-    let lastEntityId = record.archetype.entities[lastRow]
-    entity.world.entities.records[lastEntityId].row = record.row
-    record.archetype.entities[record.row] = lastEntityId
-  record.archetype.entities.setLen(lastRow)
-
+  entity.world.swapRemoveEntity(record.archetype, record.row)
   entity.world.entities.records.del(entity.id)
 
 ##################################################
@@ -366,7 +374,6 @@ proc bootstrap(world: var World) =
   let tid = typeId[Component]()
   var entity = world.spawn()
   world.components.types[tid] = entity.id
-  world.entities.records[entity.id].archetypes = newTable[ArchetypeId, ArchetypeRecord]()
 
   let sig = @[entity.id]
   let newId = world.archetypes.nextArchetypeId()
@@ -375,7 +382,7 @@ proc bootstrap(world: var World) =
     id: newId,
     signature: sig,
     columns: @[initBlobSeq(newTypeInfo[Component]())],
-    edges: newTable[EntityId, ArchetypeEdge]()
+    edges: initTable[EntityId, ArchetypeEdge]()
   )
   world.archetypes.table[sig] = archetype
 
@@ -383,9 +390,5 @@ proc bootstrap(world: var World) =
   archetype.columns[0].add(Component(info: newTypeInfo[Component]()))
 
 proc newWorld*(): World =
-  result = World(
-    archetypes: Archetypes(table: newTable[Signature, Archetype]()),
-    entities: Entities(nextId: EntityId(0), records: newTable[EntityId, EntityRecord]()),
-    components: Components(types: initTable[TypeId, EntityId]())
-  )
+  result = World()
   result.bootstrap()
