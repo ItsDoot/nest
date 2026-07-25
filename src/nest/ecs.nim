@@ -153,7 +153,7 @@ proc getTypeInfo(world: World, record: EntityRecord): TypeInfo =
 proc getOrCreateArchetype(world: var World, sig: sink Signature): Archetype =
   ## Retrieves an existing archetype with the specified signature or creates a
   ## new one if it doesn't exist.
-  sig.sort()
+  assert sig.isSorted, "Signature must be sorted"
 
   result = world.archetypes.table.getOrDefault(sig)
   if result != nil:
@@ -218,7 +218,7 @@ proc getOrCreateEdge(world: var World, src: Archetype, cid: EntityId, op: static
   
   var newSig = src.signature
   case op
-    of opAdd: newSig.add(cid)
+    of opAdd: newSig.insert(cid, newSig.lowerBound(cid))
     of opRemove: newSig.delete(newSig.binarySearch(cid))
   result = world.getOrCreateArchetype(newSig)
 
