@@ -3,7 +3,7 @@ import nest
 
 type
   Foo = object
-    value: int
+    value: string
 
 test "Entity creation":
   var world = newWorld()
@@ -13,14 +13,14 @@ test "Entity creation":
 
 test "Entity component lifecycle":
   type MyComponent = object
-    value: int
+    value: string
   var world = newWorld()
   var entity = world.spawn()
-  entity[MyComponent] = MyComponent(value: 42)
+  entity[MyComponent] = MyComponent(value: "hello")
   let myComponentId = world.component(MyComponent)
   check entity.has(MyComponent)
   check entity.has(myComponentId)
-  check entity[MyComponent] == MyComponent(value: 42)
+  check entity[MyComponent] == MyComponent(value: "hello")
   entity.remove(MyComponent)
   check not entity.has(MyComponent)
   check not entity.has(myComponentId)
@@ -29,10 +29,10 @@ test "Entity component lifecycle":
 
 test "Resource component lifecycle":
   type MyResource = object
-    value: int
+    value: string
   var world = newWorld()
-  world[MyResource] = MyResource(value: 42)
-  check world[MyResource][MyResource].value == 42
+  world[MyResource] = MyResource(value: "hello")
+  check world[MyResource][MyResource].value == "hello"
 
 test "Destroying an entity is idempotent":
   var world = newWorld()
@@ -53,11 +53,11 @@ test "Destroying an earlier entity preserves later entities":
   var world = newWorld()
   var entity1 = world.spawn()
   var entity2 = world.spawn()
-  entity1[Foo] = Foo(value: 42)
-  entity2[Foo] = Foo(value: 99)
+  entity1[Foo] = Foo(value: "hello")
+  entity2[Foo] = Foo(value: "world")
   entity1.destroy()
   check entity2.isAlive()
-  check entity2[Foo] == Foo(value: 99)
+  check entity2[Foo] == Foo(value: "world")
 
 test "Invalid entity access raises":
   var world = newWorld()
@@ -70,8 +70,8 @@ test "Moving archetypes preserves other entities":
   var world = newWorld()
   var entity1 = world.spawn()
   var entity2 = world.spawn()
-  entity1[Foo] = Foo(value: 42)
-  entity2[Foo] = Foo(value: 99)
+  entity1[Foo] = Foo(value: "hello")
+  entity2[Foo] = Foo(value: "world")
   entity1.remove(Foo)
   check entity2.isAlive()
-  check entity2[Foo] == Foo(value: 99)
+  check entity2[Foo] == Foo(value: "world")

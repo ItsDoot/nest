@@ -3,9 +3,9 @@ import nest
 
 type
   Foo = object
-    value: int
+    value: string
   Bar = object
-    value: int
+    value: string
 
 test "Component registration is stable":
   var world = newWorld()
@@ -16,26 +16,26 @@ test "Component registration is stable":
 test "Adding components preserves existing values":
   var world = newWorld()
   var entity = world.spawn()
-  entity[Foo] = Foo(value: 42)
-  entity[Bar] = Bar(value: 99)
-  check entity[Foo] == Foo(value: 42)
-  check entity[Bar] == Bar(value: 99)
+  entity[Foo] = Foo(value: "hello")
+  entity[Bar] = Bar(value: "world")
+  check entity[Foo] == Foo(value: "hello")
+  check entity[Bar] == Bar(value: "world")
 
 test "Overwriting a component preserves other components and replaces its value":
   var world = newWorld()
   var entity = world.spawn()
-  entity[Foo] = Foo(value: 42)
-  entity[Bar] = Bar(value: 99)
-  entity[Foo] = Foo(value: 100)
-  check entity[Foo] == Foo(value: 100)
-  check entity[Bar] == Bar(value: 99)
+  entity[Foo] = Foo(value: "hello")
+  entity[Bar] = Bar(value: "world")
+  entity[Foo] = Foo(value: "goodbye")
+  check entity[Foo] == Foo(value: "goodbye")
+  check entity[Bar] == Bar(value: "world")
 
 test "Component can be mutated through mutable access":
   var world = newWorld()
   var entity = world.spawn()
-  entity[Foo] = Foo(value: 42)
-  entity[Foo].value = 100
-  check entity[Foo] == Foo(value: 100)
+  entity[Foo] = Foo(value: "hello")
+  entity[Foo].value = "goodbye"
+  check entity[Foo] == Foo(value: "goodbye")
 
 test "Removing an absent component does not raise":
   var world = newWorld()

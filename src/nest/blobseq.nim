@@ -27,14 +27,17 @@ proc newTypeInfo*[T](): TypeInfo =
   result.size = sizeof(T)
   result.align = alignof(T)
   result.defaultConstruct = proc (data: pointer) =
-    zeroMem(data, sizeof(T))
-    cast[ptr T](data)[] = default(T)
+    var temp = default(T)
+    copyMem(data, unsafeAddr temp, sizeof(T))
+    wasMoved(temp) # used to avoid deallocation of temp if it has a destructor
   result.copyConstruct = proc (dest, src: pointer) =
-    zeroMem(dest, sizeof(T))
-    cast[ptr T](dest)[] = cast[ptr T](src)[] # Implicitly calls the `=copy` hook
+    var temp = `=dup`(cast[ptr T](src)[])
+    copyMem(dest, unsafeAddr temp, sizeof(T))
+    wasMoved(temp) # used to avoid deallocation of temp if it has a destructor
   result.moveConstruct = proc (dest, src: pointer) =
-    zeroMem(dest, sizeof(T))
-    cast[ptr T](dest)[] = move(cast[ptr T](src)[])
+    var temp = move(cast[ptr T](src)[])
+    copyMem(dest, unsafeAddr temp, sizeof(T))
+    wasMoved(temp) # used to avoid deallocation of temp if it has a destructor
   result.copyAssign = proc (dest, src: pointer) =
     cast[ptr T](dest)[] = cast[ptr T](src)[] # Implicitly calls the `=copy` hook
   result.moveAssign = proc (dest, src: pointer) =
