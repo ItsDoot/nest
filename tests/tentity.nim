@@ -4,6 +4,8 @@ import nest
 type
   Foo = object
     value: string
+  Bar = object
+    value: string
 
 test "Entity creation":
   var world = newWorld()
@@ -75,3 +77,19 @@ test "Moving archetypes preserves other entities":
   entity1.remove(Foo)
   check entity2.isAlive()
   check entity2[Foo] == Foo(value: "world")
+
+test "Multiple entities remain aligned after same archetype move":
+  var world = newWorld()
+  discard world.component(Foo)
+  var first = world.spawn()
+  var second = world.spawn()
+  first[Bar] = Bar(value: "first world")
+  second[Bar] = Bar(value: "second world")
+  check first[Bar] == Bar(value: "first world")
+  check second[Bar] == Bar(value: "second world")
+  first[Foo] = Foo(value: "first hello")
+  second[Foo] = Foo(value: "second hello")
+  check first[Foo] == Foo(value: "first hello")
+  check first[Bar] == Bar(value: "first world")
+  check second[Foo] == Foo(value: "second hello")
+  check second[Bar] == Bar(value: "second world")

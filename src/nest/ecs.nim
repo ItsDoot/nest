@@ -60,6 +60,8 @@ type
       ## The next available archetype ID.
     table: Table[Signature, Archetype]
       ## A mapping of signatures to their corresponding archetypes.
+    empty: Archetype
+      ## The archetype that represents an empty signature (i.e., no components).
 
   ArchetypeRecord* = object
     ## A record in the component index with the component column for an archetype.
@@ -264,8 +266,9 @@ proc swapRemoveEntity(world: var World, archetype: Archetype, row: int) =
     archetype.entities[row] = lastEntityId
   archetype.entities.setLen(lastRow)
 
-proc moveEntity(world: var World, id: EntityId, dst: Archetype) =
+proc moveEntity(world: var World, id: EntityId, dst: Archetype): int =
   ## Moves an entity to a new archetype, updating its record and transferring its components.
+  ## Returns the new row index of the entity in the destination archetype.
   world.entities.records.withValue(id, record):
     let src = record.archetype
     let oldRow = record.row
@@ -307,10 +310,20 @@ proc moveEntity(world: var World, id: EntityId, dst: Archetype) =
       if srcCol != -1:
         src.columns[srcCol].swapRemove(oldRow)
       srcIdx.inc()
+    
+    while dstIdx < dst.signature.len:
+      # Add default values for remaining components in destination archetype
+      let dstCol = dst.columnMap[dstIdx]
+      if dstCol != -1:
+        dst.columns[dstCol].addDefault()
+      dstIdx.inc()
 
     world.swapRemoveEntity(src, oldRow)
     record.archetype = dst
     record.row = newRow
+    return newRow
+  do:
+    raise newException(ValueError, "Entity with ID " & $id & " does not exist in the world")
 
 type Operation = enum
   opAdd, opRemove
@@ -365,8 +378,7 @@ proc spawn*(world: var World): Entity =
   let id = world.entities.nextId
   world.entities.nextId.inc()
 
-  # TODO: cache empty archetype
-  let emptyArchetype = world.getOrCreateArchetype(@[])
+  let emptyArchetype = world.archetypes.empty
   let row = emptyArchetype.entities.len
   emptyArchetype.entities.add(id)
 
@@ -433,10 +445,10 @@ proc `[]=`*[T](entity: var Entity, cType: typedesc[T], value: sink T) =
 
     # need to move entity to a new archetype
     let dest = world.getOrCreateEdge(erecord.archetype, cid, opAdd)
-    world.moveEntity(entity.id, dest)
+    let newRow = world.moveEntity(entity.id, dest)
     let newColumn = irecord.archetypes[dest.id].column
     if newColumn != -1:
-      dest.columns[newColumn].add(value)
+      dest.columns[newColumn][newRow, T] = value
 
 proc add*(entity: var Entity, id: Id) =
   ## Adds the given ID to the entity. If the ID corresponds to a tag
@@ -451,10 +463,7 @@ proc add*(entity: var Entity, id: Id) =
 
     # need to move entity to a new archetype
     let dest = world.getOrCreateEdge(erecord.archetype, id, opAdd)
-    world.moveEntity(entity.id, dest)
-    let newColumn = irecord.archetypes[dest.id].column
-    if newColumn != -1:
-      dest.columns[newColumn].addDefault()
+    discard world.moveEntity(entity.id, dest)
 
 proc add*[T](entity: var Entity, cType: typedesc[T]) =
   ## Adds a component of type T to the entity. If the component is zero-sized
@@ -473,7 +482,7 @@ proc remove*(entity: var Entity, id: Id) =
     
     # need to move entity to a new archetype
     let dest = world.getOrCreateEdge(erecord.archetype, id, opRemove)
-    world.moveEntity(entity.id, dest)
+    discard world.moveEntity(entity.id, dest)
   do:
     return # ID is not registered, nothing to remove
 
@@ -504,6 +513,7 @@ proc destroy*(entity: sink Entity) =
 
 proc bootstrap(world: var World) =
   ## Bootstraps the ECS world by seeding the archetype that holds `Component` entities.
+  world.archetypes.empty = world.getOrCreateArchetype(@[])
   let tid = typeId[Component]()
   var entity = world.spawn()
   world.types[tid] = entity.id
@@ -520,8 +530,8 @@ proc bootstrap(world: var World) =
   )
   world.archetypes.table[sig] = archetype
 
-  world.moveEntity(entity.id, archetype)
-  archetype.columns[0].add(Component(info: newTypeInfo[Component]()))
+  let newRow = world.moveEntity(entity.id, archetype)
+  archetype.columns[0][newRow, Component] = Component(info: newTypeInfo[Component]())
 
 proc newWorld*(): World =
   result = World()

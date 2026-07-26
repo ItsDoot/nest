@@ -14,6 +14,15 @@ test "Component registration is stable":
   let second = world.component(Foo)
   check first == second
 
+test "Adding components works independently of registration order":
+  var world = newWorld()
+  discard world.component(Foo)
+  var entity = world.spawn()
+  entity[Bar] = Bar(value: "world")
+  entity[Foo] = Foo(value: "hello")
+  check entity[Foo] == Foo(value: "hello")
+  check entity[Bar] == Bar(value: "world")
+
 test "Adding components preserves existing values":
   var world = newWorld()
   var entity = world.spawn()
@@ -77,3 +86,16 @@ test "Tag components are not stored in the archetype columns":
     check erecord.archetype.columnMap[0] == -1
   do:
     assert false, "unexpected error: entity record not found"
+
+test "add()ed components are their default values":
+  var world = newWorld()
+  var entity = world.spawn()
+  entity.add(Foo)
+  check entity[Foo] == Foo(value: "")
+
+test "add()ing a component that's already added preserves its original value":
+  var world = newWorld()
+  var entity = world.spawn()
+  entity[Foo] = Foo(value: "hello")
+  entity.add(Foo)
+  check entity[Foo] == Foo(value: "hello")
