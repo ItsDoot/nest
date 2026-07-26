@@ -173,17 +173,23 @@ template fetch(world: World, eid: EntityId, cid: Id, found: untyped, missing: un
     var irecord {.inject.}: ptr IdRecord = nil
     missing
 
+var zstAddr {.global.}: byte
+  ## Fake address for zero-sized types (ZSTs) to return a pointer when fetching a tag component.
+
 template fetchPointer(world: World, eid: EntityId, cid: Id): pointer =
   ## Fetches the various records associated with the given entity ID and ecs ID,
   ## and returns a pointer to the component data of the specified ID in the given entity.
   fetch(world, eid, cid):
     irecord.archetypes.withValue(erecord.archetype.id, val):
       if val.column == -1:
-        return nil # Tag component, no data
+        return unsafeAddr(zstAddr) # Tag component, return pointer to dummy ZST
       let column = erecord.archetype.columns[val.column]
       return column[erecord.row]
+    do:
+      raise newException(ValueError, "Entity does not have component of ID " & $cid)
   do:
     return nil
+
 
 template fetchTyped[T](world: World, eid: EntityId, cid: Id) =
   ## Fetches the various records associated with the given entity ID and ecs ID,
@@ -191,7 +197,7 @@ template fetchTyped[T](world: World, eid: EntityId, cid: Id) =
   fetch(world, eid, cid):
     irecord.archetypes.withValue(erecord.archetype.id, arecord):
       if arecord.column == -1:
-        raise newException(ValueError, "Component of type " & $T & " is a tag and has no associated data")
+        result = cast[var T](addr zstAddr) # Tag component, return reference to dummy ZST
       result = erecord.archetype.columns[arecord.column][erecord.row, T]
     do:
       raise newException(ValueError, "Entity does not have component of type " & $T)
