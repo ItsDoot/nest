@@ -116,6 +116,10 @@ proc transferItem*(dest: var BlobSeq, src: var BlobSeq, srcIndex: int) =
     src.info.moveConstruct(srcPtr, lastSrcPtr)
   dec(src.len)
 
+proc `[]`*(bs: BlobSeq, index: int): pointer =
+  ## Returns a pointer to the item at the specified index in the BlobSeq.
+  result = itemPtr(bs, index)
+
 proc `[]`*[T](bs: BlobSeq, index: int, itemType: typedesc[T]): lent T =
   ## Returns a reference to the item of type T at the specified index in the BlobSeq.
   assertTypeInfo(bs, T)
