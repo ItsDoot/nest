@@ -83,6 +83,11 @@ template appendItemPtr(bs: var BlobSeq): pointer =
     bs.grow()
   cast[pointer](cast[int](bs.data) + bs.len * bs.info.size)
 
+template assertTypeInfo(bs: BlobSeq, T: typedesc): untyped =
+  ## Asserts that the BlobSeq's TypeInfo matches the specified type T.
+  assert bs.info.size == sizeof(T), "Type size mismatch"
+  assert bs.info.align == alignof(T), "Type alignment mismatch"
+
 proc swapRemove*(bs: var BlobSeq, index: int) =
   ## Destroys item at index and swap-removes it from the BlobSeq.
   let dest = itemPtr(bs, index)
@@ -110,27 +115,23 @@ proc transferItem*(dest: var BlobSeq, src: var BlobSeq, srcIndex: int) =
 
 proc `[]`*[T](bs: BlobSeq, index: int, itemType: typedesc[T]): lent T =
   ## Returns a reference to the item of type T at the specified index in the BlobSeq.
-  assert sizeof(T) == bs.info.size, "Type size mismatch"
-  assert alignof(T) == bs.info.align, "Type alignment mismatch"
+  assertTypeInfo(bs, T)
   result = cast[ptr T](itemPtr(bs, index))[]
 
 proc `[]`*[T](bs: var BlobSeq, index: int, itemType: typedesc[T]): var T =
   ## Returns a mutable reference to the item of type T at the specified index in the BlobSeq.
-  assert sizeof(T) == bs.info.size, "Type size mismatch"
-  assert alignof(T) == bs.info.align, "Type alignment mismatch"
+  assertTypeInfo(bs, T)
   result = cast[ptr T](itemPtr(bs, index))[]
 
 proc `[]=`*[T](bs: BlobSeq, index: int, itemType: typedesc[T], value: sink T) =
   ## Sets the item of type T at the specified index in the BlobSeq.
-  assert sizeof(T) == bs.info.size, "Type size mismatch"
-  assert alignof(T) == bs.info.align, "Type alignment mismatch"
+  assertTypeInfo(bs, T)
   let dest = itemPtr(bs, index)
   bs.info.moveAssign(dest, unsafeAddr value)
 
 proc add*[T](bs: var BlobSeq, value: sink T) =
   ## Adds a new item of type T to the end of the BlobSeq.
-  assert sizeof(T) == bs.info.size, "Type size mismatch"
-  assert alignof(T) == bs.info.align, "Type alignment mismatch"
+  assertTypeInfo(bs, T)
   let dest = appendItemPtr(bs)
   bs.info.moveConstruct(dest, unsafeAddr value)
   inc(bs.len)
