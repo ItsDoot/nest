@@ -47,6 +47,7 @@ proc len*(bs: BlobSeq): int =
 proc grow*(bs: var BlobSeq, newCap: int = max(1, bs.cap * 2)) =
   ## Grows the BlobSeq to the specified new capacity.
   assert newCap > bs.cap, "New capacity must be greater than current capacity"
+  # TODO: maybe just reallocShared (non-zeroing)?
   bs.data = reallocShared0(bs.data, bs.info.size * bs.cap, bs.info.size * newCap)
   bs.cap = newCap
 

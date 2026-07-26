@@ -194,6 +194,7 @@ proc moveEntity(world: var World, id: EntityId, dst: Archetype) =
 
     for i, cid in src.signature:
       let dstCol = dst.signature.binarySearch(cid)
+      # TODO: optimize with supportsCopyMem
       if dstCol >= 0:
         dst.columns[dstCol].transferItem(src.columns[i], oldRow)
       else:
@@ -256,6 +257,7 @@ proc spawn*(world: var World): Entity =
   let id = world.entities.nextId
   world.entities.nextId.inc()
 
+  # TODO: cache empty archetype
   let emptyArchetype = world.getOrCreateArchetype(@[])
   let row = emptyArchetype.entities.len
   emptyArchetype.entities.add(id)
