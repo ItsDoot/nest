@@ -192,13 +192,32 @@ proc moveEntity(world: var World, id: EntityId, dst: Archetype) =
     let newRow = dst.entities.len
     dst.entities.add(id)
 
-    for i, cid in src.signature:
-      let dstCol = dst.signature.binarySearch(cid)
+    var srcCol = 0
+    var dstCol = 0
+
+    while srcCol < src.signature.len and dstCol < dst.signature.len:
+      let srcCid = src.signature[srcCol]
+      let dstCid = dst.signature[dstCol]
+
       # TODO: optimize with supportsCopyMem
-      if dstCol >= 0:
-        dst.columns[dstCol].transferItem(src.columns[i], oldRow)
+      if srcCid == dstCid:
+        # Component exists in both archetypes, transfer it
+        dst.columns[dstCol].transferItem(src.columns[srcCol], oldRow)
+        srcCol.inc()
+        dstCol.inc()
+      elif srcCid < dstCid:
+        # Component exists only in source archetype, remove it
+        src.columns[srcCol].swapRemove(oldRow)
+        srcCol.inc()
       else:
-        src.columns[i].swapRemove(oldRow)
+        # Component exists only in destination archetype, add default value
+        dst.columns[dstCol].addDefault()
+        dstCol.inc()
+
+    while srcCol < src.signature.len:
+      # Remove remaining components from source archetype
+      src.columns[srcCol].swapRemove(oldRow)
+      srcCol.inc()
 
     world.swapRemoveEntity(src, oldRow)
     record.archetype = dst

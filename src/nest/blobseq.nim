@@ -3,9 +3,18 @@ type
     ## Runtime type information.
     size*: int
     align*: int
-    copy*: proc (dest, src: pointer) {.raises: [].}
-    move*: proc (dest, src: pointer) {.raises: [].}
+    defaultConstruct*: proc (data: pointer) {.raises: [].}
+      ## Initializes the memory at `data` to a default value of the type.
+    copyConstruct*: proc (dest, src: pointer) {.raises: [].}
+      ## Constructs a copy of the value at `src` into `dest`.
+    moveConstruct*: proc (dest, src: pointer) {.raises: [].}
+      ## Constructs a value at `dest` by moving the value from `src`.
+    copyAssign*: proc (dest, src: pointer) {.raises: [].}
+      ## Copies the value from `src` to `dest`.
+    moveAssign*: proc (dest, src: pointer) {.raises: [].}
+      ## Moves the value from `src` to `dest`.
     destroy*: proc (data: pointer) {.raises: [].}
+      ## Destroys the value at `data`.
   BlobSeq* = object
     ## Homogenous type-erased sequence of items stored in a contiguous memory buffer.
     info: TypeInfo
@@ -17,10 +26,18 @@ proc newTypeInfo*[T](): TypeInfo =
   ## Creates a new TypeInfo object for the specified type T.
   result.size = sizeof(T)
   result.align = alignof(T)
-  result.copy = proc (dest, src: pointer) =
-    # Implicitly calls the `=copy` hook
-    cast[ptr T](dest)[] = cast[ptr T](src)[]
-  result.move = proc (dest, src: pointer) =
+  result.defaultConstruct = proc (data: pointer) =
+    zeroMem(data, sizeof(T))
+    cast[ptr T](data)[] = default(T)
+  result.copyConstruct = proc (dest, src: pointer) =
+    zeroMem(dest, sizeof(T))
+    cast[ptr T](dest)[] = cast[ptr T](src)[] # Implicitly calls the `=copy` hook
+  result.moveConstruct = proc (dest, src: pointer) =
+    zeroMem(dest, sizeof(T))
+    cast[ptr T](dest)[] = move(cast[ptr T](src)[])
+  result.copyAssign = proc (dest, src: pointer) =
+    cast[ptr T](dest)[] = cast[ptr T](src)[] # Implicitly calls the `=copy` hook
+  result.moveAssign = proc (dest, src: pointer) =
     cast[ptr T](dest)[] = move(cast[ptr T](src)[])
   result.destroy = proc (data: pointer) =
     `=destroy`(cast[ptr T](data)[])
@@ -32,7 +49,7 @@ proc initBlobSeq*(info: TypeInfo, capacity: int = 0): BlobSeq =
   result.len = 0
   result.cap = capacity
   if capacity > 0:
-    result.data = allocShared0(info.size * capacity)
+    result.data = allocShared(info.size * capacity)
   else:
     result.data = nil
 
@@ -47,8 +64,7 @@ proc len*(bs: BlobSeq): int =
 proc grow*(bs: var BlobSeq, newCap: int = max(1, bs.cap * 2)) =
   ## Grows the BlobSeq to the specified new capacity.
   assert newCap > bs.cap, "New capacity must be greater than current capacity"
-  # TODO: maybe just reallocShared (non-zeroing)?
-  bs.data = reallocShared0(bs.data, bs.info.size * bs.cap, bs.info.size * newCap)
+  bs.data = reallocShared(bs.data, bs.info.size * newCap)
   bs.cap = newCap
 
 iterator items*(bs: var BlobSeq): pointer =
@@ -69,12 +85,12 @@ template appendItemPtr(bs: var BlobSeq): pointer =
 
 proc swapRemove*(bs: var BlobSeq, index: int) =
   ## Destroys item at index and swap-removes it from the BlobSeq.
-  let p = itemPtr(bs, index)
-  bs.info.destroy(p)
+  let dest = itemPtr(bs, index)
+  bs.info.destroy(dest)
   let lastIndex = bs.len - 1
   if index != lastIndex:
     let lastItemPtr = itemPtr(bs, lastIndex)
-    bs.info.move(p, lastItemPtr)
+    bs.info.moveConstruct(dest, lastItemPtr)
   dec(bs.len)
 
 proc transferItem*(dest: var BlobSeq, src: var BlobSeq, srcIndex: int) =
@@ -84,12 +100,12 @@ proc transferItem*(dest: var BlobSeq, src: var BlobSeq, srcIndex: int) =
   assert dest.info.align == src.info.align, "Type alignment mismatch"
   let srcPtr = itemPtr(src, srcIndex)
   let destPtr = appendItemPtr(dest)
-  dest.info.move(destPtr, srcPtr)
+  dest.info.moveConstruct(destPtr, srcPtr)
   inc(dest.len)
   let lastIndex = src.len - 1
   if srcIndex != lastIndex:
     let lastSrcPtr = itemPtr(src, lastIndex)
-    src.info.move(srcPtr, lastSrcPtr)
+    src.info.moveConstruct(srcPtr, lastSrcPtr)
   dec(src.len)
 
 proc `[]`*[T](bs: BlobSeq, index: int, itemType: typedesc[T]): lent T =
@@ -108,14 +124,21 @@ proc `[]=`*[T](bs: BlobSeq, index: int, itemType: typedesc[T], value: sink T) =
   ## Sets the item of type T at the specified index in the BlobSeq.
   assert sizeof(T) == bs.info.size, "Type size mismatch"
   assert alignof(T) == bs.info.align, "Type alignment mismatch"
-  let p = itemPtr(bs, index)
-  bs.info.destroy(p)
-  bs.info.move(p, unsafeAddr value)
+  let dest = itemPtr(bs, index)
+  bs.info.moveAssign(dest, unsafeAddr value)
 
 proc add*[T](bs: var BlobSeq, value: sink T) =
   ## Adds a new item of type T to the end of the BlobSeq.
-  let p = appendItemPtr(bs)
-  bs.info.move(p, unsafeAddr value)
+  assert sizeof(T) == bs.info.size, "Type size mismatch"
+  assert alignof(T) == bs.info.align, "Type alignment mismatch"
+  let dest = appendItemPtr(bs)
+  bs.info.moveConstruct(dest, unsafeAddr value)
+  inc(bs.len)
+
+proc addDefault*(bs: var BlobSeq) =
+  ## Adds a new item of type T to the end of the BlobSeq, initialized to its default value.
+  let dest = appendItemPtr(bs)
+  bs.info.defaultConstruct(dest)
   inc(bs.len)
 
 proc `=destroy`(bs: var BlobSeq) =
