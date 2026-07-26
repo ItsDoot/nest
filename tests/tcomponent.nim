@@ -1,4 +1,4 @@
-import unittest
+import std/[importutils, unittest, tables]
 import nest
 
 type
@@ -6,6 +6,7 @@ type
     value: string
   Bar = object
     value: string
+  Tag = distinct Zst
 
 test "Component registration is stable":
   var world = newWorld()
@@ -49,3 +50,30 @@ test "Invalid component access raises":
   var entity = world.spawn()
   expect ValueError:
     discard entity[Foo].value
+
+test "Tag components can be added and removed":
+  check sizeof(Tag) == 0
+  var world = newWorld()
+  var entity = world.spawn()
+  entity.add(Tag)
+  check entity.has(Tag)
+  check entity[Tag] is Tag
+  entity.remove(Tag)
+  check not entity.has(Tag)
+  entity[Tag] = default(Tag)
+  check entity.has(Tag)
+  entity.remove(Tag)
+  check not entity.has(Tag)
+
+test "Tag components are not stored in the archetype columns":
+  privateAccess(World)
+  privateAccess(Entities)
+  privateAccess(EntityRecord)
+  privateAccess(Archetype)
+  var world = newWorld()
+  var entity = world.spawn()
+  entity.add(Tag)
+  world.entities.records.withValue(entity.id, erecord):
+    check erecord.archetype.columnMap[0] == -1
+  do:
+    assert false, "unexpected error: entity record not found"

@@ -6,6 +6,14 @@ import blobseq
 ##################################################
 
 type
+  Zst* = array[0, byte]
+    ## A zero-sized type (ZST) with no associated data. You can use this to
+    ## create tag components in the ECS world:
+    ## 
+    ## ```nim
+    ## type MyTag = distinct Zst
+    ## ```
+
   TypeId* = distinct uint32
     ## Unique identifier for a type.
 
@@ -27,6 +35,10 @@ type
       ## Unique identifier for the archetype.
     signature: Signature
       ## A sorted list of component IDs that make up the archetype.
+    columnMap: seq[int]
+      ## A mapping of component ID indices to their corresponding column indices
+      ## in the archetype. Sorted in the same order as `signature`. Values of -1
+      ## indicate that the component is a tag (i.e., it has no associated data).
     columns: seq[Column]
       ## A collection of columns, each representing a specific component type in the archetype.
     entities: seq[EntityId]
@@ -161,14 +173,25 @@ proc getOrCreateArchetype(world: var World, sig: sink Signature): Archetype =
 
   let newId = world.archetypes.nextArchetypeId()
 
-  var columns = newSeq[Column](sig.len)
+  var columnMap = newSeq[int](sig.len)
+  var columns = newSeq[Column]()
   for i, cid in sig:
-    columns[i] = initBlobSeq(world.getTypeInfo(world.entities.records[cid]))
-    world.entities.records[cid].archetypes[newId] = ArchetypeRecord(column: i)
+    world.entities.records.withValue(cid, record):
+      let typeInfo = world.getTypeInfo(record[])
+      if typeInfo.size == 0:
+        columnMap[i] = -1 # Tag component, no data
+        record.archetypes[newId] = ArchetypeRecord(column: -1)
+      else:
+        columnMap[i] = columns.len
+        columns.add(initBlobSeq(typeInfo))
+        record.archetypes[newId] = ArchetypeRecord(column: columnMap[i])
+    do:
+      assert false, "Component entity with ID " & $cid & " does not exist in the world"
 
   result = Archetype(
     id: newId,
     signature: sig,
+    columnMap: columnMap,
     columns: columns,
     edges: initTable[EntityId, ArchetypeEdge]()
   )
@@ -192,32 +215,41 @@ proc moveEntity(world: var World, id: EntityId, dst: Archetype) =
     let newRow = dst.entities.len
     dst.entities.add(id)
 
-    var srcCol = 0
-    var dstCol = 0
+    var srcIdx = 0
+    var dstIdx = 0
 
-    while srcCol < src.signature.len and dstCol < dst.signature.len:
-      let srcCid = src.signature[srcCol]
-      let dstCid = dst.signature[dstCol]
+    while srcIdx < src.signature.len and dstIdx < dst.signature.len:
+      let srcCid = src.signature[srcIdx]
+      let dstCid = dst.signature[dstIdx]
+      let srcCol = src.columnMap[srcIdx]
+      let dstCol = dst.columnMap[dstIdx]
 
       # TODO: optimize with supportsCopyMem
       if srcCid == dstCid:
         # Component exists in both archetypes, transfer it
-        dst.columns[dstCol].transferItem(src.columns[srcCol], oldRow)
-        srcCol.inc()
-        dstCol.inc()
+        if srcCol != -1 and dstCol != -1:
+          dst.columns[dstCol].transferItem(src.columns[srcCol], oldRow)
+        else:
+          assert srcCol == -1 and dstCol == -1, "Tag component should not have data"
+        srcIdx.inc()
+        dstIdx.inc()
       elif srcCid < dstCid:
         # Component exists only in source archetype, remove it
-        src.columns[srcCol].swapRemove(oldRow)
-        srcCol.inc()
+        if srcCol != -1:
+          src.columns[srcCol].swapRemove(oldRow)
+        srcIdx.inc()
       else:
         # Component exists only in destination archetype, add default value
-        dst.columns[dstCol].addDefault()
-        dstCol.inc()
+        if dstCol != -1:
+          dst.columns[dstCol].addDefault()
+        dstIdx.inc()
 
-    while srcCol < src.signature.len:
+    while srcIdx < src.signature.len:
       # Remove remaining components from source archetype
-      src.columns[srcCol].swapRemove(oldRow)
-      srcCol.inc()
+      let srcCol = src.columnMap[srcIdx]
+      if srcCol != -1:
+        src.columns[srcCol].swapRemove(oldRow)
+      srcIdx.inc()
 
     world.swapRemoveEntity(src, oldRow)
     record.archetype = dst
@@ -307,7 +339,10 @@ proc has*(entity: Entity, id: EntityId): bool =
   ## Checks if this entity is associated with the entity of the given ID.
   let world = entity.world
   world.entities.records.withValue(entity.id, record):
-    return world.tryGetColumn(record[], id) != -1
+    world.entities.records.withValue(id, componentRecord):
+      return record.archetype.id in componentRecord.archetypes
+    do:
+      return false # The component entity with the given ID does not exist in the world
   do:
     return false # This entity does not exist in the world
 
@@ -346,14 +381,41 @@ proc `[]=`*[T](entity: var Entity, cType: typedesc[T], value: sink T) =
   world.entities.records.withValue(cid, componentRecord):
     componentRecord.archetypes.withValue(entityRecord.archetype.id, val):
       # component already present, overwrite it
-      entityRecord.archetype.columns[val.column][entityRecord.row, T] = value
+      if val.column != -1:
+        entityRecord.archetype.columns[val.column][entityRecord.row, T] = value
       return
 
     # need to move entity to a new archetype
     let dest = world.getOrCreateEdge(entityRecord.archetype, cid, opAdd)
     world.moveEntity(entity.id, dest)
     let newColumn = componentRecord.archetypes[dest.id].column
-    dest.columns[newColumn].add(value)
+    if newColumn != -1:
+      dest.columns[newColumn].add(value)
+
+proc add*(entity: var Entity, id: EntityId) =
+  ## Adds a component with the given ID to the entity. If the component is
+  ## zero-sized (i.e., a tag), it will be added without any associated data.
+  ## Otherwise, the component will be initialized with its default value.
+  var world = entity.world
+  var entityRecord = world.entities.records[entity.id]
+  world.entities.records.withValue(id, componentRecord):
+    componentRecord.archetypes.withValue(entityRecord.archetype.id, val):
+      # component already present, do nothing
+      return
+
+    # need to move entity to a new archetype
+    let dest = world.getOrCreateEdge(entityRecord.archetype, id, opAdd)
+    world.moveEntity(entity.id, dest)
+    let newColumn = componentRecord.archetypes[dest.id].column
+    if newColumn != -1:
+      dest.columns[newColumn].addDefault()
+
+proc add*[T](entity: var Entity, cType: typedesc[T]) =
+  ## Adds a component of type T to the entity. If the component is zero-sized
+  ## (i.e., a tag), it will be added without any associated data. Otherwise,
+  ## the component will be initialized with its default value.
+  let cid = entity.world.component(T)
+  entity.add(cid)
 
 proc remove*[T](entity: var Entity, cType: typedesc[T]) =
   ## Removes the component of type T from the entity, if it exists.
@@ -402,6 +464,7 @@ proc bootstrap(world: var World) =
   let archetype = Archetype(
     id: newId,
     signature: sig,
+    columnMap: @[0],
     columns: @[initBlobSeq(newTypeInfo[Component]())],
     edges: initTable[EntityId, ArchetypeEdge]()
   )
