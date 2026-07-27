@@ -65,8 +65,14 @@ type
 
   ArchetypeRecord* = object
     ## A record in the component index with the component column for an archetype.
+    archetype: Archetype
+      ## The archetype to which the component belongs.
     column: int
       ## The index of the component column in the archetype's columns.
+
+  IdRecord* = object
+    ## A record that stores the archetypes that contain its component or tag.
+    archetypes: Table[ArchetypeId, ArchetypeRecord]
 
   EntityRecord* = object
     ## A record that stores the archetype and row index for an entity.
@@ -80,10 +86,6 @@ type
       ## The next available entity ID.
     records: Table[EntityId, EntityRecord]
       ## A mapping of entity IDs to their corresponding entity records.
-
-  IdRecord* = object
-    ## A record that stores the archetypes that contain its component or tag.
-    archetypes: Table[ArchetypeId, ArchetypeRecord]
 
   Components* = object
     ## A collection of all components in the ECS world.
@@ -176,6 +178,11 @@ template fetch(world: World, eid: EntityId, cid: Id, found: untyped, missing: un
 var zstAddr {.global.}: byte
   ## Fake address for zero-sized types (ZSTs) to return a pointer when fetching a tag component.
 
+template zstVar[T](): var T =
+  ## Returns a reference to a zero-sized type (ZST) for use in tag components.
+  assert sizeof(T) == 0, "zstVar can only be used with zero-sized types"
+  cast[var T](addr zstAddr)
+
 template fetchPointer(world: World, eid: EntityId, cid: Id): pointer =
   ## Fetches the various records associated with the given entity ID and ecs ID,
   ## and returns a pointer to the component data of the specified ID in the given entity.
@@ -197,8 +204,9 @@ template fetchTyped[T](world: World, eid: EntityId, cid: Id) =
   fetch(world, eid, cid):
     irecord.archetypes.withValue(erecord.archetype.id, arecord):
       if arecord.column == -1:
-        result = cast[var T](addr zstAddr) # Tag component, return reference to dummy ZST
-      result = erecord.archetype.columns[arecord.column][erecord.row, T]
+        result = zstVar[T]()
+      else:
+        result = erecord.archetype.columns[arecord.column][erecord.row, T]
     do:
       raise newException(ValueError, "Entity does not have component of type " & $T)
   do:
@@ -238,28 +246,26 @@ proc getOrCreateArchetype(world: var World, sig: sink Signature): Archetype =
 
   let newId = world.archetypes.nextArchetypeId()
 
-  var columnMap = newSeq[int](sig.len)
-  var columns = newSeq[Column]()
-  for i, id in sig:
-    world.ids.withValue(id, irecord):
-      let typeInfo = world.getTypeInfo(id)
-      if typeInfo.isNone or typeInfo.get().size == 0:
-        columnMap[i] = -1 # Tag component, no data
-        irecord.archetypes[newId] = ArchetypeRecord(column: -1)
-      else:
-        columnMap[i] = columns.len
-        columns.add(initBlobSeq(typeInfo.get()))
-        irecord.archetypes[newId] = ArchetypeRecord(column: columnMap[i])
-    do:
-      assert false, "Component entity with ID " & $id & " does not exist in the world"
-
   result = Archetype(
     id: newId,
     signature: sig,
-    columnMap: columnMap,
-    columns: columns,
+    columnMap: newSeq[int](sig.len),
+    columns: newSeq[Column](),
     edges: initTable[Id, ArchetypeEdge]()
   )
+
+  for i, id in result.signature:
+    world.ids.withValue(id, irecord):
+      let typeInfo = world.getTypeInfo(id)
+      if typeInfo.isNone or typeInfo.get().size == 0:
+        result.columnMap[i] = -1 # Tag component, no data
+      else:
+        result.columnMap[i] = result.columns.len
+        result.columns.add(initBlobSeq(typeInfo.get()))
+      irecord.archetypes[newId] = ArchetypeRecord(archetype: result, column: result.columnMap[i])
+    do:
+      assert false, "Component entity with ID " & $id & " does not exist in the world"
+
   world.archetypes.table[sig] = result
 
 proc swapRemoveEntity(world: var World, archetype: Archetype, row: int) =
@@ -514,6 +520,61 @@ proc destroy*(entity: sink Entity) =
   entity.world.entities.records.del(entity.id)
 
 ##################################################
+# QUERY MANAGEMENT
+##################################################
+
+iterator query*[A](world: var World, typeA: typedesc[A]): tuple[id: EntityId, a: var A] =
+  ## Iterates over all entities in the ECS world that have a component of type A,
+  ## yielding the entity ID and a reference to the component data of type A.
+  let idA = world.component(A)
+  world.ids.withValue(idA, irecord):
+    for arecord in irecord.archetypes.values:
+      for row, entityId in arecord.archetype.entities:
+        if arecord.column == -1:
+          yield (entityId, zstVar[A]())
+        else:
+          yield (entityId, arecord.archetype.columns[arecord.column][row, A])
+
+iterator query*[A, B](world: var World, typeA: typedesc[A], typeB: typedesc[B]): tuple[id: EntityId, a: var A, b: var B] =
+  ## Iterates over all entities in the ECS world that have components of type A and B,
+  ## yielding the entity ID and references to the component data of types A and B.
+  let idA = world.component(A)
+  let idB = world.component(B)
+  world.ids.withValue(idA, irecordA):
+    world.ids.withValue(idB, irecordB):
+      for arecord in irecordA.archetypes.values:
+        irecordB.archetypes.withValue(arecord.archetype.id, brecord):
+          for row, entityId in arecord.archetype.entities:
+            if arecord.column == -1:
+              yield (entityId, zstVar[A](), brecord.archetype.columns[brecord.column][row, B])
+            elif brecord.column == -1:
+              yield (entityId, arecord.archetype.columns[arecord.column][row, A], zstVar[B]())
+            else:
+              yield (entityId, arecord.archetype.columns[arecord.column][row, A], brecord.archetype.columns[brecord.column][row, B])
+
+iterator query*[A, B, C](world: var World, typeA: typedesc[A], typeB: typedesc[B], typeC: typedesc[C]): tuple[id: EntityId, a: var A, b: var B, c: var C] =
+  ## Iterates over all entities in the ECS world that have components of type A, B, and C,
+  ## yielding the entity ID and references to the component data of types A, B, and C.
+  let idA = world.component(A)
+  let idB = world.component(B)
+  let idC = world.component(C)
+  world.ids.withValue(idA, irecordA):
+    world.ids.withValue(idB, irecordB):
+      world.ids.withValue(idC, irecordC):
+        for arecord in irecordA.archetypes.values:
+          irecordB.archetypes.withValue(arecord.archetype.id, brecord):
+            irecordC.archetypes.withValue(arecord.archetype.id, crecord):
+              for row, entityId in arecord.archetype.entities:
+                if arecord.column == -1:
+                  yield (entityId, zstVar[A](), brecord.archetype.columns[brecord.column][row, B], crecord.archetype.columns[crecord.column][row, C])
+                elif brecord.column == -1:
+                  yield (entityId, arecord.archetype.columns[arecord.column][row, A], zstVar[B](), crecord.archetype.columns[crecord.column][row, C])
+                elif crecord.column == -1:
+                  yield (entityId, arecord.archetype.columns[arecord.column][row, A], brecord.archetype.columns[brecord.column][row, B], zstVar[C]())
+                else:
+                  yield (entityId, arecord.archetype.columns[arecord.column][row, A], brecord.archetype.columns[brecord.column][row, B], crecord.archetype.columns[crecord.column][row, C])
+
+##################################################
 # WORLD MANAGEMENT
 ##################################################
 
@@ -526,7 +587,6 @@ proc bootstrap(world: var World) =
 
   let sig = @[Id(entity.id)]
   let newId = world.archetypes.nextArchetypeId()
-  world.ids.mgetOrPut(entity.id, IdRecord()).archetypes[newId] = ArchetypeRecord(column: 0)
   let archetype = Archetype(
     id: newId,
     signature: sig,
@@ -534,6 +594,7 @@ proc bootstrap(world: var World) =
     columns: @[initBlobSeq(newTypeInfo[Component]())],
     edges: initTable[Id, ArchetypeEdge]()
   )
+  world.ids.mgetOrPut(entity.id, IdRecord()).archetypes[newId] = ArchetypeRecord(archetype: archetype, column: 0)
   world.archetypes.table[sig] = archetype
 
   let newRow = world.moveEntity(entity.id, archetype)
