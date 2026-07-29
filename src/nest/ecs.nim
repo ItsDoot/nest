@@ -1,4 +1,4 @@
-import std/[tables, algorithm, options, hashes]
+import std/[tables, algorithm, options, hashes, macros]
 import blobseq, slotmap
 
 ##################################################
@@ -149,6 +149,14 @@ proc typeId*[T](): TypeId =
 ##################################################
 # ARCHETYPE MANAGEMENT
 ##################################################
+
+proc archetypes*(world: World): lent Archetypes =
+  ## Returns a reference to the archetypes in the ECS world.
+  result = world.archetypes
+
+proc len*(archetypes: Archetypes): int =
+  ## Returns the number of archetypes in the ECS world.
+  result = archetypes.table.len
 
 proc nextArchetypeId(archetypes: var Archetypes): ArchetypeId =
   ## Returns the next available archetype ID and increments the counter.
@@ -391,6 +399,38 @@ proc spawn*(world: var World): Entity =
   let id = world.entities.records.add(EntityRecord(archetype: archetype, row: row))
   archetype.entities.add(id)
   result = Entity(world: world, id: id)
+
+template spawnTuple(world: var World, components: untyped): Entity =
+  ## Helper template that generates the spawn code for a tuple of components.
+  ## Called by the `spawn` macro to handle multiple components.
+  var values = components
+  # Assemble the signature seq
+  var signature: Signature
+  for _, component in fieldPairs(values):
+    let cid = world.component(typeof(component))
+    signature.add(Id(cid))
+  signature.sort()
+  # Create the archetype and entity record
+  let archetype = world.getOrCreateArchetype(signature)
+  let row = archetype.entities.len
+  let eid = world.entities.records.add(EntityRecord(archetype: archetype, row: row))
+  # Update the archetype
+  archetype.entities.add(eid)
+  for _, component in fieldPairs(values):
+    let cid = world.getComponentId(typeof(component))
+    let sigIdx = archetype.signature.binarySearch(Id(cid))
+    let colIdx = archetype.columnMap[sigIdx]
+    if colIdx != -1:
+      archetype.columns[colIdx].add(move(component))
+  Entity(world: world, id: eid)
+
+macro spawn*(world: var World, first: typed, rest: varargs[typed]): untyped =
+  ## Creates a new entity in the ECS world with the specified components and returns its handle.
+  let components = newNimNode(nnkTupleConstr)
+  components.add(first)
+  for r in rest:
+    components.add(r)
+  result = newCall(bindSym"spawnTuple", world, components)
 
 proc component*[T](world: var World, cType: typedesc[T]): EntityId =
   ## Registers a new component type T in the ECS world and returns its unique entity ID.

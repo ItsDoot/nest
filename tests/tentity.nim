@@ -108,3 +108,11 @@ test "Stale entity handles cannot access newer entities":
   expect ValueError:
     discard world[staleId]
   check replacement.isAlive()
+
+test "Spawning an entity with multiple components doesn't create unnecessary archetypes":
+  var world = newWorld()
+  let archetypesBefore = world.archetypes.len()
+  var entity = world.spawn(Foo(value: "hello"), Bar(value: "world"))
+  check entity[Foo] == Foo(value: "hello")
+  check entity[Bar] == Bar(value: "world")
+  check world.archetypes.len() - archetypesBefore == 1
