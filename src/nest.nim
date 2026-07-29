@@ -2,6 +2,6 @@
 # exports the main API in this file. Note that you cannot rename this file
 # but you can remove it if you wish.
 
-import nest/ecs
+import nest/[ecs, slotmap]
 
-export ecs
+export ecs, slotmap

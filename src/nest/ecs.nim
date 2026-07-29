@@ -1,5 +1,5 @@
-import std/[tables, algorithm, options]
-import blobseq
+import std/[tables, algorithm, options, hashes]
+import blobseq, slotmap
 
 ##################################################
 # TYPE DEFINITIONS
@@ -17,12 +17,12 @@ type
   TypeId* = distinct uint32
     ## Unique identifier for a type.
 
-  EntityId* = distinct uint32
-    ## Unique identifier for an entity.
-
-  Id* = distinct uint32
+  Id* = distinct Key
     ## Unique identifier for anything that can be added to an entity, including
-    ## components and tags.
+    ## components, tags, and entities.
+
+  EntityId* = distinct Id
+    ## Unique identifier for an entity.
 
   ArchetypeId* = distinct uint32
     ## Unique identifier for an archetype.
@@ -84,7 +84,7 @@ type
   Entities* = object
     nextId: EntityId
       ## The next available entity ID.
-    records: Table[EntityId, EntityRecord]
+    records: SlotMap[EntityId, EntityRecord]
       ## A mapping of entity IDs to their corresponding entity records.
 
   Components* = object
@@ -119,19 +119,20 @@ type
 # ID MANAGEMENT
 ##################################################
 
-proc `==`*(a, b: TypeId): bool {.borrow.}
-proc `<`*(a, b: TypeId): bool {.borrow.}
+func `==`*(a, b: TypeId): bool {.borrow.}
+func `<`*(a, b: TypeId): bool {.borrow.}
 
-proc `==`*(a, b: EntityId): bool {.borrow.}
-proc `<`*(a, b: EntityId): bool {.borrow.}
-proc `$`*(a: EntityId): string {.borrow.}
+func `==`*(a, b: Id): bool {.borrow.}
+func `<`*(a, b: Id): bool {.borrow.}
+func `$`*(a: Id): string {.borrow.}
+func hash*(a: Id): Hash {.borrow.}
 
-proc `==`*(a, b: Id): bool {.borrow.}
-proc `<`*(a, b: Id): bool {.borrow.}
-proc `$`*(a: Id): string {.borrow.}
+func `==`*(a, b: EntityId): bool {.borrow.}
+func `<`*(a, b: EntityId): bool {.borrow.}
+func `$`*(a: EntityId): string {.borrow.}
 
 converter toId*(a: EntityId): Id =
-  result = Id(uint32(a))
+  result = Id(a)
 
 proc `==`*(a, b: ArchetypeId): bool {.borrow.}
 
@@ -220,7 +221,7 @@ template fetchTyped[T](world: World, eid: EntityId, cType: typedesc[T]) =
 
 proc getTypeInfo(world: World, id: Id): Option[TypeInfo] =
   ## Determines if the component or tag with the given ID requires storage.
-  let eid = EntityId(uint32(id))
+  let eid = EntityId(id)
   let cid = world.getComponentId(Component)
   world.entities.records.withValue(eid, erecord):
     world.ids.withValue(cid, irecord):
@@ -232,8 +233,6 @@ proc getTypeInfo(world: World, id: Id): Option[TypeInfo] =
         return none(TypeInfo) # The ID corresponds to a tag (no Component component)
     do:
       raise newException(ValueError, "'Component' does not exist in the world")
-  do:
-    return none(TypeInfo) # The ID does not correspond to a valid entity in the world
 
 proc getOrCreateArchetype(world: var World, sig: sink Signature): Archetype =
   ## Retrieves an existing archetype with the specified signature or creates a
@@ -387,14 +386,10 @@ proc `[]=`*[T](world: var World, cType: typedesc[T], value: sink T) =
 
 proc spawn*(world: var World): Entity =
   ## Creates a new entity in the ECS world and returns its handle.
-  let id = world.entities.nextId
-  world.entities.nextId.inc()
-
-  let emptyArchetype = world.archetypes.empty
-  let row = emptyArchetype.entities.len
-  emptyArchetype.entities.add(id)
-
-  world.entities.records[id] = EntityRecord(archetype: emptyArchetype, row: row)
+  let archetype = world.archetypes.empty
+  let row = archetype.entities.len
+  let id = world.entities.records.add(EntityRecord(archetype: archetype, row: row))
+  archetype.entities.add(id)
   result = Entity(world: world, id: id)
 
 proc component*[T](world: var World, cType: typedesc[T]): EntityId =
@@ -507,17 +502,17 @@ proc destroy*(entity: sink Entity) =
   ## Destroys the entity and removes it from the ECS world.
   if not entity.isAlive():
     return
-
   if entity.has(Component):
     raise newException(ValueError, "Cannot destroy component entities")
 
-  let record = entity.world.entities.records[entity.id]
+  var world = entity.world
+  let record = world.entities.records[entity.id]
 
   for col in record.archetype.columns.mitems:
     col.swapRemove(record.row)
   
-  entity.world.swapRemoveEntity(record.archetype, record.row)
-  entity.world.entities.records.del(entity.id)
+  world.swapRemoveEntity(record.archetype, record.row)
+  discard world.entities.records.remove(entity.id)
 
 ##################################################
 # QUERY MANAGEMENT

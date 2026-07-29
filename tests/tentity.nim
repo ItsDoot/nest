@@ -93,3 +93,18 @@ test "Multiple entities remain aligned after same archetype move":
   check first[Bar] == Bar(value: "first world")
   check second[Foo] == Foo(value: "second hello")
   check second[Bar] == Bar(value: "second world")
+
+test "Stale entity handles cannot access newer entities":
+  var world = newWorld()
+  var stale = world.spawn()
+  let staleId = stale.id()
+  let staleKey = Key(staleId)
+  stale.destroy()
+  let replacement = world.spawn()
+  let replacementId = replacement.id()
+  let replacementKey = Key(replacementId)
+  check staleKey.index == replacementKey.index
+  check staleKey.version != replacementKey.version
+  expect ValueError:
+    discard world[staleId]
+  check replacement.isAlive()
