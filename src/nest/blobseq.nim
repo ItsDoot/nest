@@ -48,6 +48,7 @@ proc newTypeInfo*[T](): TypeInfo =
 proc initBlobSeq*(info: TypeInfo, capacity: int = 0): BlobSeq =
   ## Creates a new BlobSeq object with the specified TypeInfo and capacity.
   assert capacity >= 0, "Capacity must be non-negative"
+  assert info.size mod info.align == 0, "Type size must be a multiple of its alignment"
   result.info = info
   result.len = 0
   result.cap = capacity
