@@ -82,15 +82,8 @@ type
       ## The row index of the entity in the archetype's columns.
 
   Entities* = object
-    nextId: EntityId
-      ## The next available entity ID.
     records: SlotMap[EntityId, EntityRecord]
       ## A mapping of entity IDs to their corresponding entity records.
-
-  Components* = object
-    ## A collection of all components in the ECS world.
-    types: Table[TypeId, EntityId]
-      ## A mapping of type IDs to their corresponding component IDs.
 
   World* = ref object
     ## The ECS world that manages entities and archetypes.
